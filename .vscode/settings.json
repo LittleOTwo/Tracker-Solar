@@ -1,0 +1,6 @@
+{
+    "C_Cpp.errorSquiggles": "disabled",
+    "files.associations": {
+        "rtc_e_sol.h": "c"
+    }
+}
