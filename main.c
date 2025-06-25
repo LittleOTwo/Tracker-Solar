@@ -23,14 +23,14 @@ const double longitude_meridiano_padrao_graus = -45.0;  // Para UTC-3 (BRT)
 
 int main(void){
     // 1.
-    I2C0_Init();  // Isso é do clock do RTC, para fazer a corrente passar pelo fio
-    RTC_Verificar_E_Configurar_Se_Necessario(&calibracao);  // Calibrar o relógio, caso não tenha ocorrido
+    const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c1));
+    RTC_Setup(i2c_dev, &calibracao);  // Liga o relógio, e calibra caso não tenha ocorrido
     servo_inicializar();
     printf("Sistema do tracker solar inicializado.\n");
 
     while(1){
         // 2.
-        ler_RTC(&agora);
+        RTC_Ler(&agora);
         printf("Data: %02d/%02d/%04d %02d:%02d:%02d\n", agora.dia, agora.mes, agora.ano, agora.hora, agora.minuto, agora.segundo);
 
         // 3.
