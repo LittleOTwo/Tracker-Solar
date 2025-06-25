@@ -1,7 +1,7 @@
 #include "servo.h" 
 #include "pwm.h"   // Sua biblioteca PWM customizada
 #include <stdio.h> // Para printf de ERRO apenas
-
+#define SERVO_PERIODO_TPM_MODULO 7500
 // NOTA: Constantes como TPM0_BASE, TPM0, TPM_PLLFLL, TPM_CLK, PS_128, EDGE_PWM, TPM_PWM_H
 // DEVEM ser definidas pela sua biblioteca "pwm.h" ou pelos includes que ela faz.
 
@@ -27,13 +27,18 @@ void servo_definir_angulo(double angulo) {
 
     // Converte ângulo (0-180 graus) para valor de contagem do TPM (para pulsos de 1ms-2ms)
     // 1ms de pulso = 5% do período de 20ms. 2ms de pulso = 10% do período de 20ms.
-    double cnv_min = 0.05 * SERVO_PERIODO_TPM_MODULO; 
-    double cnv_max = 0.10 * SERVO_PERIODO_TPM_MODULO; 
+    // Duty cycle útil do servomotor: 2% - 12,77%
+    uint16_t cnv_min = 0.02 * SERVO_PERIODO_TPM_MODULO; 
+    uint16_t cnv_max = 0.1277 * SERVO_PERIODO_TPM_MODULO; 
 
     valor_cnv = (uint16_t)(cnv_min + (angulo / 180.0) * (cnv_max - cnv_min));
 
     // Define o valor do duty cycle (largura do pulso) no canal do TPM
     if (pwm_tpm_CnV(TPM0, 0, valor_cnv) != 0) {
         printf("ERRO: Falha ao definir CnV do Servo!\n");
+
+    pwm_tpm_CnV(TPM0, 0, valor_cnv);
+
+    
     }
 }
