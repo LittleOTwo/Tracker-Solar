@@ -1,156 +1,85 @@
-#include "MKL25Z4.h"
 #include "rtc_e_sol.h"
-#include <stdio.h>
-#include <stdint.h>
-#define RTC_ADDR 0x68
-#define ENDERECO_FLAG_RTC_RAM 0x08 // Ex: Primeiro byte (posição) da RAM do usuário
-#define VALOR_FLAG_RTC_CONFIGURADO 0xA5 // "Número mágico"
+#include <drivers/i2c.h> // API I2C oficial do Zephyr
+#include <stdio.h>       // Para a função de impressão do Zephyr, printk
 
-// Horário do relógio
+#define RTC_I2C_ADDR 0x68
+#define ENDERECO_FLAG_RTC_RAM 0x08
+#define VALOR_FLAG_RTC_CONFIGURADO 0xA5
+
+// A definição real da nossa variável global. Ela "vive" aqui.
 data_t agora;
 
-// Funções de conversão
-uint8_t bcd_to_dec(uint8_t val){
-    return ((val >> 4) * 10) + (val & 0x0F);
+// Funções de conversão BCD (não mudam, são C puro e internas a este arquivo)
+static uint8_t dec_to_bcd(uint8_t val) { return ((val / 10) << 4) | (val % 10); }
+static uint8_t bcd_to_dec(uint8_t val) { return ((val >> 4) * 10) + (val & 0x0F); }
+
+// Função para escrever um byte na RAM do RTC usando a API do Zephyr
+static int rtc_escrever_ram_byte(const struct device *i2c_dev, uint8_t endereco_ram, uint8_t valor) {
+    uint8_t buffer[] = {endereco_ram, valor};
+    return i2c_write(i2c_dev, buffer, sizeof(buffer), RTC_I2C_ADDR);
 }
 
-uint8_t dec_to_bcd(uint8_t val){
-    return ((val / 10) << 4) | (val % 10);
+// Função para ler um byte da RAM do RTC usando a API do Zephyr
+static int rtc_ler_ram_byte(const struct device *i2c_dev, uint8_t endereco_ram, uint8_t *valor_lido) {
+    return i2c_write_read(i2c_dev, RTC_I2C_ADDR, &endereco_ram, 1, valor_lido, 1);
 }
 
-// Funções do I2C
-void I2C0_Init(void){
-    SIM->SCGC4 |= SIM_SCGC4_I2C0_MASK;
-    SIM->SCGC5 |= SIM_SCGC5_PORTE_MASK;
+// Função interna para configurar a hora no RTC
+static void configurar_rtc_interno(const struct device *i2c_dev, const data_t *valores_config) {
+    uint8_t buffer_escrita[8];
+    buffer_escrita[0] = 0x00; // Endereço do registrador de segundos
+    buffer_escrita[1] = dec_to_bcd(valores_config->segundo) & 0x7F;
+    buffer_escrita[2] = dec_to_bcd(valores_config->minuto);
+    buffer_escrita[3] = dec_to_bcd(valores_config->hora) & 0xBF;
+    buffer_escrita[4] = dec_to_bcd(1);
+    buffer_escrita[5] = dec_to_bcd(valores_config->dia);
+    buffer_escrita[6] = dec_to_bcd(valores_config->mes);
+    buffer_escrita[7] = dec_to_bcd(valores_config->ano - 2000);
 
-    PORTE->PCR[24] |= PORT_PCR_MUX(5);  // PTE24 - SCL
-    PORTE->PCR[25] |= PORT_PCR_MUX(5);  // PTE25 - SDA
-
-    I2C0->F = 0x27;  // ~100 kHz
-    I2C0->C1 = I2C_C1_IICEN_MASK;
-}
-
-void I2C0_Start(void){
-    I2C0->C1 |= I2C_C1_TX_MASK | I2C_C1_MST_MASK;
-}
-
-void I2C0_Stop(void){
-    I2C0->C1 &= ~I2C_C1_MST_MASK;
-    I2C0->C1 &= ~I2C_C1_TX_MASK;
-}
-
-void I2C0_Wait(void){
-    while (!(I2C0->S & I2C_S_IICIF_MASK));
-    I2C0->S |= I2C_S_IICIF_MASK;
-}
-
-void I2C0_Write(uint8_t data){
-    I2C0->D = data;
-    I2C0_Wait();
-}
-
-static uint8_t rtc_ler_ram_byte(uint8_t endereco_ram) {
-    uint8_t dado;
-    I2C0_Start();
-    I2C0_Write(RTC_ADDR << 1);
-    I2C0_Write(endereco_ram);
-    I2C0->C1 |= I2C_C1_RSTA_MASK; // Repeated start
-    I2C0_Write((RTC_ADDR << 1) | 0x01); // Modo Leitura
-    I2C0->C1 &= ~I2C_C1_TX_MASK;      // Mestre em modo RX
-    I2C0->C1 |= I2C_C1_TXAK_MASK;     // Prepara NACK (vamos ler só 1 byte)
-    
-    (void)I2C0->D; // Leitura falsa para iniciar
-    I2C0_Wait();   // Espera byte chegar
-    dado = I2C0->D; // Lê o byte
-    I2C0_Stop();
-    return dado;
-}
-
-// Função para escrever um byte na RAM (ou registrador) do RTC
-// Esta função pode ser 'static' se só for usada dentro de rtc.c
-static void rtc_escrever_ram_byte(uint8_t endereco_ram, uint8_t valor) {
-    I2C0_Start();
-    I2C0_Write(RTC_ADDR << 1);
-    I2C0_Write(endereco_ram);
-    I2C0_Write(valor);
-    I2C0_Stop();
-}
-
-// Função para armazenar no RTC
-void configurar_RTC(data_t *calibracao){
-    uint8_t dados[7];
-
-    dados[0] = dec_to_bcd(calibracao->segundo) & 0x7F;
-    dados[1] = dec_to_bcd(calibracao->minuto);
-    dados[2] = dec_to_bcd(calibracao->hora) & 0xBF;
-    dados[3] = 0;  // Dia da semana (não usamos)
-    dados[4] = dec_to_bcd(calibracao->dia);
-    dados[5] = dec_to_bcd(calibracao->mes);
-    dados[6] = dec_to_bcd(calibracao->ano - 2000);
-
-    // Seleciona registrador de início (0x00)
-    I2C0_Start();
-    I2C0_Write(RTC_ADDR << 1);  // Write
-    I2C0_Write(0x00);
-
-    // Escreve os 7 bytes
-    for (int i = 0; i < 7; i++) {
-        I2C0_Write(dados[i]);
+    int ret = i2c_write(i2c_dev, buffer_escrita, sizeof(buffer_escrita), RTC_I2C_ADDR);
+    if (ret != 0) {
+        printk("ERRO: Falha ao escrever para configurar RTC! (erro: %d)\n", ret);
     }
-    I2C0_Stop();
 }
 
-void RTC_Verificar_E_Configurar_Se_Necessario(data_t *valores_calibracao_padrao){
-    uint8_t flag_config = rtc_ler_ram_byte(ENDERECO_FLAG_RTC_RAM);
-
-    if (flag_config != VALOR_FLAG_RTC_CONFIGURADO){
-        printf("RTC: Flag de configuração não encontrada ou inválida. Configurando com valores padrão...\n");
-        
-        configurar_RTC(valores_calibracao_padrao); // Usa os valores de calibração
-        rtc_escrever_ram_byte(ENDERECO_FLAG_RTC_RAM, VALOR_FLAG_RTC_CONFIGURADO);
-        
-        printf("RTC: Configurado e flag salva na RAM do RTC.\n");
-    }
-    else printf("RTC: Já configurado anteriormente (flag encontrada na RAM do RTC).\n");
-}
-
-// Função para ler o RTC
-void ler_RTC(data_t *agora){
-    uint8_t dados[7];
-
-    I2C0_Start();
-    I2C0_Write(RTC_ADDR << 1); // Write
-    I2C0_Write(0x00);
-    I2C0->C1 |= I2C_C1_RSTA_MASK;
-    I2C0_Write((RTC_ADDR << 1) | 0x01); // Read
-    I2C0->C1 &= ~I2C_C1_TX_MASK;
-
-    for(int i=0;i<6;i++){
-        I2C0->C1 &= ~I2C_C1_TXAK_MASK;
-        if(i==0){
-            (void)I2C0->D;
-        }
-        I2C0_Wait();
-        dados[i] = I2C0->D;
+// Implementação da nossa nova função pública de setup
+void RTC_Setup(const struct device *i2c_dev, const data_t *calibracao_padrao) {
+    if (!device_is_ready(i2c_dev)) {
+        printk("ERRO: Dispositivo I2C nao esta pronto!\n");
+        return;
     }
 
-    I2C0->C1 |= I2C_C1_TXAK_MASK;
-    I2C0_Wait();
-    dados[6] = I2C0->D;
-    I2C0_Stop();
+    uint8_t flag_lida;
+    int ret = rtc_ler_ram_byte(i2c_dev, ENDERECO_FLAG_RTC_RAM, &flag_lida);
 
-    // Converte e armazena no "agora"
-    agora->segundo = bcd_to_dec(dados[0] & 0x7F);
-    agora->minuto = bcd_to_dec(dados[1]);
-    agora->hora = bcd_to_dec(dados[2] & 0x3F);
-    agora->dia = bcd_to_dec(dados[4]);
-    agora->mes = bcd_to_dec(dados[5] & 0x7F);
-    agora->ano = bcd_to_dec(dados[6]) + 2000;   
+    if (ret != 0 || flag_lida != VALOR_FLAG_RTC_CONFIGURADO) {
+        printk("RTC nao configurado. Configurando com valores padrao...\n");
+        configurar_rtc_interno(i2c_dev, calibracao_padrao);
+        rtc_escrever_ram_byte(i2c_dev, ENDERECO_FLAG_RTC_RAM, VALOR_FLAG_RTC_CONFIGURADO);
+        printk("RTC configurado e flag salva.\n");
+    } else {
+        printk("RTC ja configurado anteriormente.\n");
+    }
 }
 
-// Função de delay
-void delay_ms(volatile uint32_t ms){
-    while (ms--) {
-        for (volatile uint32_t i = 0; i < 7000; i++);
+// Implementação da nossa nova função de leitura
+void RTC_Ler(const struct device *i2c_dev) {
+    uint8_t reg_addr_inicio = 0x00;
+    uint8_t dados_lidos[7];
+
+    if (!device_is_ready(i2c_dev)) { return; }
+
+    int ret = i2c_write_read(i2c_dev, RTC_I2C_ADDR, &reg_addr_inicio, 1, dados_lidos, 7);
+    if (ret != 0) {
+        printk("ERRO ao ler do RTC! (erro: %d)\n", ret);
+        return;
     }
+
+    // Atualiza diretamente a variável global 'agora'
+    agora.segundo = bcd_to_dec(dados_lidos[0] & 0x7F);
+    agora.minuto  = bcd_to_dec(dados_lidos[1]);
+    agora.hora    = bcd_to_dec(dados_lidos[2] & 0x3F);
+    agora.dia     = bcd_to_dec(dados_lidos[4]);
+    agora.mes     = bcd_to_dec(dados_lidos[5]);
+    agora.ano     = bcd_to_dec(dados_lidos[6]) + 2000;
 }
