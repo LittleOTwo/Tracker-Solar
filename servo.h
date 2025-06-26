@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // Define o período do PWM para 50Hz (20ms) com Prescaler de 128 e clock de ~24MHz
-#define SERVO_PERIODO_TPM_MODULO 3749 
+#define SERVO_PERIODO_TPM_MODULO 7500 
 
 // !!! IMPORTANTE: AJUSTE ESTES PINOS PARA SEU HARDWARE !!!
 // Defina a PORTA e o PINO onde o fio de SINAL do seu servo está conectado.
